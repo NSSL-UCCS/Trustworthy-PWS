@@ -1,0 +1,1139 @@
+theory PWS_Security_Complete_Scheme_multi_page begin
+
+// Function signature and definition of the equational theory E
+
+functions: adec/2, aenc/2, fst/1, h/1, kdf/2, mac/2, pair/2, pk/1,
+           sdec/2, senc/2, sign/2, snd/1, true/0, verify/3
+equations:
+    adec(aenc(x.1, pk(x.2)), x.2) = x.1,
+    fst(<x.1, x.2>) = x.1,
+    sdec(senc(x.1, x.2), x.2) = x.1,
+    snd(<x.1, x.2>) = x.2,
+    verify(sign(x.1, x.2), x.1, pk(x.2)) = true
+
+
+
+
+
+/* looping facts with injective instances: State_Linear/1 */
+
+
+
+
+
+
+
+
+
+rule (modulo E) Init_Subscription:
+   [ Fr( ~k_sim ), Fr( ~sk_HN ) ]
+  --[ Provisioned( $UE, $HN ) ]->
+   [
+   !Ltk_UE_USIM( $UE, $HN, ~k_sim, pk(~sk_HN) ),
+   !Ltk_HN_DB( $HN, $UE, ~k_sim ), !Ltk_HN_Priv( $HN, ~sk_HN )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) Init_Secure_Backhaul:
+   [ ] --> [ !Secure_Link( $AMF, $HN ) ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) Init_CBE_AMF_Link:
+   [ ] --> [ !Secure_Link_CBE_AMF( $CBE, $AMF ) ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) Init_AMF_BS_Link:
+   [ ] --> [ !Secure_Link_AMF_BS( $AMF, $BS ) ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) CBE_Generates_And_Sends_Key:
+   [ Fr( ~k_CBE ), !Secure_Link_CBE_AMF( $CBE, $AMF ) ]
+  --[ CBE_Created_Key( $CBE, pk(~k_CBE) ), CBE_Sent_Key( $CBE, $AMF )
+  ]->
+   [
+   !Ltk_CBE( $CBE, ~k_CBE ),
+   Secure_Channel_CBE_AMF( $CBE, $AMF,
+                           <'Key_Provisioning', pk(~k_CBE)>
+   )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) AMF_Install_CBE_Key:
+   [
+   Secure_Channel_CBE_AMF( $CBE, $AMF, <'Key_Provisioning', pk_CBE> )
+   ]
+  --[ AMF_Received_Key( $AMF, $CBE ) ]->
+   [ !AMF_State_CBE_Key( $AMF, $CBE, pk_CBE ) ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) Init_Clock:
+   [ Fr( ~t0 ) ]
+  --[ Epoch_Started( ~t0 ) ]->
+   [ State_Linear( ~t0 ), !Epoch_Tag( ~t0 ) ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) Time_Passes:
+   [ State_Linear( old_t ), Fr( ~new_t ) ]
+  --[ Epoch_Ended( old_t ), Epoch_Started( ~new_t ) ]->
+   [ State_Linear( ~new_t ), !Epoch_Tag( ~new_t ) ]
+
+  // loop breaker: [0]
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) UE_Send_Attach_SUCI:
+   [ Fr( ~id_req ), !Ltk_UE_USIM( $UE, $HN, ~k_sim, pk_HN ) ]
+  --[ UE_Starts_AKA( $UE ) ]->
+   [
+   Out( <'Attach_Req', aenc($UE, pk_HN), $HN, ~id_req> ),
+   St_UE_1_Wait_Challenge( $UE, $HN, ~id_req )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) AMF_Forward_SUCI:
+   [
+   In( <'Attach_Req', SUCI, $HN, id_req> ), !Secure_Link( $AMF, $HN )
+   ]
+  -->
+   [
+   Channel_AMF_to_HN( $AMF, $HN, SUCI, id_req ),
+   St_AMF_1_Wait_Vector( $AMF, $HN, SUCI, id_req )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) HN_Process_SUCI:
+   [
+   Channel_AMF_to_HN( $AMF, $HN, SUCI, id_req ),
+   !Ltk_HN_Priv( $HN, ~sk_HN ),
+   !Ltk_HN_DB( $HN, adec(SUCI, ~sk_HN), ~k_sim ), Fr( ~RAND )
+   ]
+  --[ HN_Authorized_User( $HN, adec(SUCI, ~sk_HN) ) ]->
+   [
+   Channel_HN_to_AMF( $HN, $AMF, adec(SUCI, ~sk_HN), id_req,
+                      <~RAND, mac(~k_sim, ~RAND), mac(~k_sim, <~RAND, 'Res'>), 
+                       kdf(~k_sim, <~RAND, 'K_AMF_Derivation'>)>
+   )
+   ]
+
+  /*
+  rule (modulo AC) HN_Process_SUCI:
+     [
+     Channel_AMF_to_HN( $AMF, $HN, SUCI, id_req ),
+     !Ltk_HN_Priv( $HN, ~sk_HN ), !Ltk_HN_DB( $HN, z, ~k_sim ),
+     Fr( ~RAND )
+     ]
+    --[ HN_Authorized_User( $HN, z ) ]->
+     [
+     Channel_HN_to_AMF( $HN, $AMF, z, id_req,
+                        <~RAND, mac(~k_sim, ~RAND), mac(~k_sim, <~RAND, 'Res'>), 
+                         kdf(~k_sim, <~RAND, 'K_AMF_Derivation'>)>
+     )
+     ]
+    variants (modulo AC)
+    1. ~sk_HN
+             = ~sk_HN.11
+       SUCI  = SUCI.12
+       z     = adec(SUCI.12, ~sk_HN.11)
+    
+    2. ~sk_HN
+             = ~sk_HN.13
+       SUCI  = aenc(z.16, pk(~sk_HN.13))
+       z     = z.16
+  */
+
+rule (modulo E) AMF_Send_Challenge:
+   [
+   Channel_HN_to_AMF( $HN, $AMF, $UE, id_req,
+                      <RAND, AUTN, XRES, K_nas>
+   ),
+   St_AMF_1_Wait_Vector( $AMF, $HN, SUCI, id_req )
+   ]
+  -->
+   [
+   Out( <'Auth_Req', RAND, AUTN> ),
+   St_AMF_2_Wait_Res( $UE, $AMF, XRES, K_nas )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) UE_Process_Challenge:
+   [
+   In( <'Auth_Req', RAND, AUTN> ),
+   St_UE_1_Wait_Challenge( $UE, $HN, id_req ),
+   !Ltk_UE_USIM( $UE, $HN, ~k_sim, pk_HN )
+   ]
+  --[
+  Eq( AUTN, mac(~k_sim, RAND) ),
+  UE_Completed_AKA( $UE, $AMF,
+                    kdf(~k_sim, <RAND, 'K_AMF_Derivation'>)
+  )
+  ]->
+   [
+   Out( <'Auth_Res', mac(~k_sim, <RAND, 'Res'>)> ),
+   !NAS_Context( $UE, $AMF, kdf(~k_sim, <RAND, 'K_AMF_Derivation'>) )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) AMF_Check_Response:
+   [
+   In( <'Auth_Res', RES> ),
+   St_AMF_2_Wait_Res( $UE, $AMF, XRES, K_nas )
+   ]
+  --[ Eq( RES, XRES ), AMF_Completed_AKA( $UE, $AMF, K_nas ) ]->
+   [ !NAS_Context( $UE, $AMF, K_nas ) ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) AMF_Deliver_CBE_Key:
+   [
+   !NAS_Context( $UE, $AMF, K_nas ),
+   !AMF_State_CBE_Key( $AMF, $CBE, pk_CBE )
+   ]
+  --[ AMF_Forwarding_Key( $AMF, $CBE, $UE ) ]->
+   [ Out( senc(pk_CBE, K_nas) ) ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) UE_Install_CBE_Key:
+   [ In( senc(pk_CBE, K_nas) ), !NAS_Context( $UE, $AMF, K_nas ) ]
+  --[ UE_Learned_Key( $UE, pk_CBE ) ]->
+   [
+   !UE_Installed_PWS_Root( $UE, pk_CBE ), !UE_Location( $UE, $AreaID )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) CBE_Generate_Alert:
+   [
+   Fr( ~N ), Fr( ~Content1 ), Fr( ~Content2 ), Fr( ~Content3 ),
+   In( TargetAreaID ), !Epoch_Tag( CurrentEpoch ),
+   !Ltk_CBE( $CBE, ~sk_CBE ), !Secure_Link_CBE_AMF( $CBE, $AMF )
+   ]
+  --[
+  CBE_Generated_Alert( $CBE, ~Content1, ~Content2, ~Content3, ~N,
+                       h(<~Content1, h(<~Content2, h(<~Content3, ~N>)>)>), TargetAreaID,
+                       CurrentEpoch
+  ),
+  CBE_Sent_Alert_To_AMF( $CBE, $AMF ),
+  CBE_Set_Expiration( ~N, CurrentEpoch )
+  ]->
+   [
+   Secure_Channel_CBE_AMF( $CBE, $AMF,
+                           <'write-replace-warning', ~Content1, ~Content2, ~Content3, ~N, 
+                            h(<~Content1, h(<~Content2, h(<~Content3, ~N>)>)>), 
+                            sign(<h(<~Content1, h(<~Content2, h(<~Content3, ~N>)>)>), 
+                                  TargetAreaID, CurrentEpoch>,
+                                 ~sk_CBE), 
+                            TargetAreaID, CurrentEpoch>
+   )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) AMF_Forward_Alert_To_BS:
+   [
+   Secure_Channel_CBE_AMF( $CBE, $AMF,
+                           <'write-replace-warning', M1, M2, M3, N, C, sig, TargetAreaID, 
+                            ExpirationTime>
+   ),
+   !Secure_Link_AMF_BS( $AMF, $BS )
+   ]
+  --[ AMF_Forwarded_Alert( $AMF, $BS, N ) ]->
+   [
+   Secure_Channel_AMF_BS( $AMF, $BS,
+                          <'Broadcast_Command', M1, M2, M3, N, C, sig, TargetAreaID, 
+                           ExpirationTime>
+   )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) BS_Broadcast_Step1_Notification:
+   [
+   Secure_Channel_AMF_BS( $AMF, $BS,
+                          <'Broadcast_Command', M1, M2, M3, N, C, sig, TargetAreaID, 
+                           ExpirationTime>
+   )
+   ]
+  --[
+  BS_Sent_Notification( $BS, C ), BS_Start_Alert_Session( $BS, N )
+  ]->
+   [
+   Out( <'Alert_Notification', C, sig, TargetAreaID, ExpirationTime>
+   ),
+   St_BS_Send_Page1( $BS, M1, M2, M3, N, h(<M2, h(<M3, N>)>),
+                     h(<M3, N>)
+   )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) BS_Send_Page1:
+   [ St_BS_Send_Page1( $BS, M1, M2, M3, N, H_Mid, H_Last ) ]
+  -->
+   [
+   Out( <'SIB_Page1', M1, H_Mid> ),
+   St_BS_Send_Page2( $BS, M2, M3, N, H_Last )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) BS_Send_Page2:
+   [ St_BS_Send_Page2( $BS, M2, M3, N, H_Last ) ]
+  -->
+   [ Out( <'SIB_Page2', M2, H_Last> ), St_BS_Send_Page3( $BS, M3, N )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) BS_Send_Page3:
+   [ St_BS_Send_Page3( $BS, M3, N ) ]
+  --[ BS_Finished_Chain( $BS, N ) ]->
+   [ Out( <'SIB_Page3', M3, N> ) ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) UE_Receive_Paging:
+   [
+   In( <'Alert_Notification', C, sig, TargetAreaID, ExpirationTime> ),
+   !UE_Installed_PWS_Root( $UE, pk_CBE ),
+   !UE_Location( $UE, MyCurrentArea )
+   ]
+  --[
+  Ensure_Active_Epoch( ExpirationTime ),
+  UE_Accepted_Paging_With_Time( $UE, C, ExpirationTime ),
+  Eq( verify(sig, <C, TargetAreaID, ExpirationTime>, pk_CBE), true ),
+  UE_Verified_Signature( $UE, C ), Eq( TargetAreaID, MyCurrentArea ),
+  UE_Received_Notification( $UE, C, MyCurrentArea )
+  ]->
+   [ St_UE_Wait_Page1( $UE, C, TargetAreaID, ExpirationTime ) ]
+
+  /*
+  rule (modulo AC) UE_Receive_Paging:
+     [
+     In( <'Alert_Notification', C, sig, TargetAreaID, ExpirationTime> ),
+     !UE_Installed_PWS_Root( $UE, pk_CBE ),
+     !UE_Location( $UE, MyCurrentArea )
+     ]
+    --[
+    Ensure_Active_Epoch( ExpirationTime ),
+    UE_Accepted_Paging_With_Time( $UE, C, ExpirationTime ),
+    Eq( z, true ), UE_Verified_Signature( $UE, C ),
+    Eq( TargetAreaID, MyCurrentArea ),
+    UE_Received_Notification( $UE, C, MyCurrentArea )
+    ]->
+     [ St_UE_Wait_Page1( $UE, C, TargetAreaID, ExpirationTime ) ]
+    variants (modulo AC)
+    1. C     = C.11
+       ExpirationTime
+             = ExpirationTime.12
+       TargetAreaID
+             = TargetAreaID.14
+       pk_CBE
+             = pk_CBE.15
+       sig   = sig.16
+       z     = verify(sig.16, <C.11, TargetAreaID.14, ExpirationTime.12>,
+                      pk_CBE.15)
+    
+    2. C     = C.15
+       ExpirationTime
+             = ExpirationTime.16
+       TargetAreaID
+             = TargetAreaID.18
+       pk_CBE
+             = pk(x.27)
+       sig   = sign(<C.15, TargetAreaID.18, ExpirationTime.16>, x.27)
+       z     = true
+  */
+
+rule (modulo E) UE_Get_Page1:
+   [
+   In( <'SIB_Page1', M1, H_Mid> ),
+   St_UE_Wait_Page1( $UE, C, TargetAreaID, ExpirationTime )
+   ]
+  --[ Eq( h(<M1, H_Mid>), C ) ]->
+   [ St_UE_Wait_Page2( $UE, M1, H_Mid, TargetAreaID, ExpirationTime )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) UE_Get_Page2:
+   [
+   In( <'SIB_Page2', M2, H_Last> ),
+   St_UE_Wait_Page2( $UE, M1, H_Mid, TargetAreaID, ExpirationTime )
+   ]
+  --[ Eq( h(<M2, H_Last>), H_Mid ) ]->
+   [
+   St_UE_Wait_Page3( $UE, M1, M2, H_Last, TargetAreaID, ExpirationTime
+   )
+   ]
+
+  /* has exactly the trivial AC variant */
+
+rule (modulo E) UE_Get_Page3:
+   [
+   In( <'SIB_Page3', M3, N> ),
+   St_UE_Wait_Page3( $UE, M1, M2, H_Last, TargetAreaID, ExpirationTime
+   )
+   ]
+  --[
+  Eq( h(<M3, N>), H_Last ),
+  UE_Displayed_Alert( $UE, M1, M2, M3, TargetAreaID, ExpirationTime )
+  ]->
+   [ St_UE_Done( $UE, N ) ]
+
+  /* has exactly the trivial AC variant */
+
+lemma aka_executability:
+  exists-trace
+  "∃ UE AMF key #i #j.
+    (UE_Completed_AKA( UE, AMF, key ) @ #i) ∧
+    (AMF_Completed_AKA( UE, AMF, key ) @ #j)"
+/*
+guarded formula characterizing all satisfying traces:
+"∃ UE AMF key #i #j.
+  (UE_Completed_AKA( UE, AMF, key ) @ #i) ∧
+  (AMF_Completed_AKA( UE, AMF, key ) @ #j)"
+*/
+simplify
+solve( St_UE_1_Wait_Challenge( $UE, $HN, id_req ) ▶₁ #i )
+  case UE_Send_Attach_SUCI
+  solve( !Ltk_UE_USIM( $UE, $HN, ~k_sim, pk_HN ) ▶₂ #i )
+    case Init_Subscription
+    solve( St_AMF_2_Wait_Res( $UE, $AMF, RES,
+                              kdf(~k_sim, <RAND, 'K_AMF_Derivation'>)
+           ) ▶₁ #j )
+      case AMF_Send_Challenge
+      solve( !KU( aenc($UE, pk(~sk_HN.2)) ) @ #vk.17 )
+        case UE_Send_Attach_SUCI
+        solve( !KU( ~RAND ) @ #vk.4 )
+          case AMF_Send_Challenge
+          solve( !KU( mac(~k_sim, ~RAND) ) @ #vk.6 )
+            case AMF_Send_Challenge
+            solve( !KU( mac(~k_sim, <~RAND, 'Res'>) ) @ #vk.10 )
+              case UE_Process_Challenge
+              SOLVED // trace found
+            qed
+          qed
+        qed
+      qed
+    qed
+  qed
+qed
+
+lemma cbe_key_delivery_executability:
+  exists-trace "∃ UE key #i. UE_Learned_Key( UE, key ) @ #i"
+/*
+guarded formula characterizing all satisfying traces:
+"∃ UE key #i. (UE_Learned_Key( UE, key ) @ #i)"
+*/
+simplify
+solve( !NAS_Context( $UE, $AMF, K_nas ) ▶₁ #i )
+  case AMF_Check_Response
+  solve( !KU( senc(key, kdf(~k_sim, <~RAND, 'K_AMF_Derivation'>))
+         ) @ #vk )
+    case AMF_Deliver_CBE_Key_case_1
+    solve( !KU( aenc($UE, pk(~sk_HN)) ) @ #vk.13 )
+      case UE_Send_Attach_SUCI
+      solve( !KU( ~RAND ) @ #vk.17 )
+        case AMF_Send_Challenge
+        solve( !KU( mac(~k_sim, <~RAND, 'Res'>) ) @ #vk.6 )
+          case UE_Process_Challenge
+          solve( !KU( mac(~k_sim, ~RAND) ) @ #vk.18 )
+            case AMF_Send_Challenge
+            SOLVED // trace found
+          qed
+        qed
+      qed
+    qed
+  qed
+qed
+
+lemma cbe_key_integrity:
+  all-traces
+  "∀ UE key #i.
+    (UE_Learned_Key( UE, key ) @ #i) ⇒
+    (∃ CBE #j. CBE_Created_Key( CBE, key ) @ #j)"
+/*
+guarded formula characterizing all counter-examples:
+"∃ UE key #i.
+  (UE_Learned_Key( UE, key ) @ #i)
+ ∧
+  ∀ CBE #j. (CBE_Created_Key( CBE, key ) @ #j) ⇒ ⊥"
+*/
+simplify
+solve( !NAS_Context( $UE, $AMF, K_nas ) ▶₁ #i )
+  case AMF_Check_Response
+  solve( !KU( senc(key, kdf(~k_sim, <~RAND, 'K_AMF_Derivation'>))
+         ) @ #vk )
+    case AMF_Deliver_CBE_Key_case_1
+    by contradiction /* from formulas */
+  next
+    case AMF_Deliver_CBE_Key_case_2
+    by contradiction /* from formulas */
+  next
+    case c_senc
+    solve( !KU( kdf(~k_sim, <~RAND, 'K_AMF_Derivation'>) ) @ #vk.15 )
+      case c_kdf
+      by solve( !KU( ~k_sim ) @ #vk.16 )
+    qed
+  qed
+next
+  case UE_Process_Challenge
+  solve( !KU( senc(key, kdf(~k_sim, <RAND, 'K_AMF_Derivation'>))
+         ) @ #vk )
+    case AMF_Deliver_CBE_Key_case_1
+    by contradiction /* from formulas */
+  next
+    case AMF_Deliver_CBE_Key_case_2
+    by contradiction /* from formulas */
+  next
+    case c_senc
+    solve( !KU( kdf(~k_sim, <RAND, 'K_AMF_Derivation'>) ) @ #vk.7 )
+      case c_kdf
+      by solve( !KU( ~k_sim ) @ #vk.9 )
+    qed
+  qed
+qed
+
+lemma alert_executability:
+  exists-trace
+  "∃ UE M1 M2 M3 TargetAreaID ExpirationTime #i.
+    UE_Displayed_Alert( UE, M1, M2, M3, TargetAreaID, ExpirationTime
+    ) @ #i"
+/*
+guarded formula characterizing all satisfying traces:
+"∃ UE M1 M2 M3 TargetAreaID ExpirationTime #i.
+  (UE_Displayed_Alert( UE, M1, M2, M3, TargetAreaID, ExpirationTime
+   ) @ #i)"
+*/
+simplify
+solve( St_UE_Wait_Page3( $UE, M1, M2, h(<M3, N>), TargetAreaID,
+                         ExpirationTime
+       ) ▶₁ #i )
+  case UE_Get_Page2_case_1
+  solve( !KU( senc(pk(x), kdf(~k_sim, <RAND, 'K_AMF_Derivation'>))
+         ) @ #vk.24 )
+    case AMF_Deliver_CBE_Key_case_1
+    solve( !KU( sign(<h(<M1, h(<M2, h(<M3, N>)>)>), $AreaID, 
+                      ExpirationTime>,
+                     ~k_CBE)
+           ) @ #vk.21 )
+      case BS_Broadcast_Step1_Notification_case_1
+      solve( !KU( ~Content3 ) @ #vk.5 )
+        case BS_Send_Page3
+        solve( !KU( senc(pk_CBE,
+                         kdf(~k_sim.1, <RAND.1, 'K_AMF_Derivation'>))
+               ) @ #vk.25 )
+          case AMF_Deliver_CBE_Key_case_1
+          solve( !KU( mac(~k_sim, RAND) ) @ #vk.31 )
+            case AMF_Send_Challenge
+            solve( !KU( mac(~k_sim.1, RAND.1) ) @ #vk.34 )
+              case AMF_Send_Challenge
+              solve( !KU( aenc($UE, pk(~sk_HN.6)) ) @ #vk.46 )
+                case UE_Send_Attach_SUCI
+                solve( !KU( aenc($UE, pk(~sk_HN.7)) ) @ #vk.53 )
+                  case UE_Send_Attach_SUCI
+                  solve( !KU( ~N ) @ #vk.19 )
+                    case BS_Send_Page3
+                    solve( !KU( ~Content2 ) @ #vk.25 )
+                      case BS_Send_Page2
+                      solve( !KU( ~Content1 ) @ #vk.31 )
+                        case BS_Send_Page1
+                        solve( !KU( ~t0 ) @ #vk.37 )
+                          case BS_Broadcast_Step1_Notification
+                          solve( !KU( ~RAND ) @ #vk.39 )
+                            case AMF_Send_Challenge
+                            solve( !KU( ~RAND.1 ) @ #vk.40 )
+                              case AMF_Send_Challenge
+                              solve( !KU( h(<~Content3, ~N>) ) @ #vk.34 )
+                                case BS_Send_Page2
+                                solve( !KU( h(<~Content2, h(<~Content3, ~N>)>) ) @ #vk.36 )
+                                  case BS_Send_Page1
+                                  solve( !KU( h(<~Content1, h(<~Content2, h(<~Content3, ~N>)>)>)
+                                         ) @ #vk.38 )
+                                    case BS_Broadcast_Step1_Notification
+                                    SOLVED // trace found
+                                  qed
+                                qed
+                              qed
+                            qed
+                          qed
+                        qed
+                      qed
+                    qed
+                  qed
+                qed
+              qed
+            qed
+          qed
+        qed
+      qed
+    qed
+  qed
+qed
+
+lemma alert_integrity:
+  all-traces
+  "∀ UE M1 M2 M3 TargetAreaID ExpirationTime #i.
+    (UE_Displayed_Alert( UE, M1, M2, M3, TargetAreaID, ExpirationTime
+     ) @ #i) ⇒
+    (∃ CBE C N #j.
+      CBE_Generated_Alert( CBE, M1, M2, M3, N, C, TargetAreaID,
+                           ExpirationTime
+      ) @ #j)"
+/*
+guarded formula characterizing all counter-examples:
+"∃ UE M1 M2 M3 TargetAreaID ExpirationTime #i.
+  (UE_Displayed_Alert( UE, M1, M2, M3, TargetAreaID, ExpirationTime
+   ) @ #i)
+ ∧
+  ∀ CBE C N #j.
+   (CBE_Generated_Alert( CBE, M1, M2, M3, N, C, TargetAreaID,
+                         ExpirationTime
+    ) @ #j)
+  ⇒
+   ⊥"
+*/
+simplify
+solve( St_UE_Wait_Page3( $UE, M1, M2, h(<M3, N>), TargetAreaID,
+                         ExpirationTime
+       ) ▶₁ #i )
+  case UE_Get_Page2_case_1
+  solve( !KU( senc(pk(x), kdf(~k_sim, <RAND, 'K_AMF_Derivation'>))
+         ) @ #vk.24 )
+    case AMF_Deliver_CBE_Key_case_1
+    solve( !KU( sign(<h(<M1, h(<M2, h(<M3, N>)>)>), $AreaID, 
+                      ExpirationTime>,
+                     ~k_CBE)
+           ) @ #vk.21 )
+      case BS_Broadcast_Step1_Notification_case_1
+      by contradiction /* from formulas */
+    next
+      case BS_Broadcast_Step1_Notification_case_2
+      by contradiction /* from formulas */
+    next
+      case c_sign
+      by solve( !KU( ~k_CBE ) @ #vk.36 )
+    qed
+  next
+    case AMF_Deliver_CBE_Key_case_2
+    solve( !KU( sign(<h(<M1, h(<M2, h(<M3, N>)>)>), $AreaID, 
+                      ExpirationTime>,
+                     ~k_CBE)
+           ) @ #vk.21 )
+      case BS_Broadcast_Step1_Notification_case_1
+      by contradiction /* from formulas */
+    next
+      case BS_Broadcast_Step1_Notification_case_2
+      by contradiction /* from formulas */
+    next
+      case c_sign
+      by solve( !KU( ~k_CBE ) @ #vk.49 )
+    qed
+  next
+    case c_senc
+    solve( !KU( kdf(~k_sim, <RAND, 'K_AMF_Derivation'>) ) @ #vk.36 )
+      case c_kdf
+      by solve( !KU( ~k_sim ) @ #vk.38 )
+    qed
+  qed
+next
+  case UE_Get_Page2_case_2
+  solve( !KU( senc(pk(x), kdf(~k_sim, <RAND, 'K_AMF_Derivation'>))
+         ) @ #vk.24 )
+    case AMF_Deliver_CBE_Key_case_1
+    solve( !KU( sign(<h(<M1, h(<M2, h(<M3, N>)>)>), $AreaID, 
+                      ExpirationTime>,
+                     ~k_CBE)
+           ) @ #vk.21 )
+      case BS_Broadcast_Step1_Notification_case_1
+      by contradiction /* from formulas */
+    next
+      case BS_Broadcast_Step1_Notification_case_2
+      by contradiction /* from formulas */
+    next
+      case c_sign
+      by solve( !KU( ~k_CBE ) @ #vk.45 )
+    qed
+  next
+    case AMF_Deliver_CBE_Key_case_2
+    solve( !KU( sign(<h(<M1, h(<M2, h(<M3, N>)>)>), $AreaID, 
+                      ExpirationTime>,
+                     ~k_CBE)
+           ) @ #vk.21 )
+      case BS_Broadcast_Step1_Notification_case_1
+      by contradiction /* from formulas */
+    next
+      case BS_Broadcast_Step1_Notification_case_2
+      by contradiction /* from formulas */
+    next
+      case c_sign
+      by solve( !KU( ~k_CBE ) @ #vk.56 )
+    qed
+  next
+    case c_senc
+    solve( !KU( kdf(~k_sim, <RAND, 'K_AMF_Derivation'>) ) @ #vk.45 )
+      case c_kdf
+      by solve( !KU( ~k_sim ) @ #vk.47 )
+    qed
+  qed
+next
+  case UE_Get_Page2_case_3
+  solve( !KU( senc(pk(x), kdf(~k_sim, <~RAND, 'K_AMF_Derivation'>))
+         ) @ #vk.24 )
+    case AMF_Deliver_CBE_Key_case_1
+    solve( !KU( sign(<h(<M1, h(<M2, h(<M3, N>)>)>), $AreaID, 
+                      ExpirationTime>,
+                     ~k_CBE)
+           ) @ #vk.21 )
+      case BS_Broadcast_Step1_Notification_case_1
+      by contradiction /* from formulas */
+    next
+      case BS_Broadcast_Step1_Notification_case_2
+      by contradiction /* from formulas */
+    next
+      case c_sign
+      by solve( !KU( ~k_CBE ) @ #vk.49 )
+    qed
+  next
+    case AMF_Deliver_CBE_Key_case_2
+    solve( !KU( sign(<h(<M1, h(<M2, h(<M3, N>)>)>), $AreaID, 
+                      ExpirationTime>,
+                     ~k_CBE)
+           ) @ #vk.21 )
+      case BS_Broadcast_Step1_Notification_case_1
+      by contradiction /* from formulas */
+    next
+      case BS_Broadcast_Step1_Notification_case_2
+      by contradiction /* from formulas */
+    next
+      case c_sign
+      by solve( !KU( ~k_CBE ) @ #vk.45 )
+    qed
+  next
+    case c_senc
+    solve( !KU( kdf(~k_sim, <~RAND, 'K_AMF_Derivation'>) ) @ #vk.45 )
+      case c_kdf
+      by solve( !KU( ~k_sim ) @ #vk.46 )
+    qed
+  qed
+next
+  case UE_Get_Page2_case_4
+  solve( !KU( senc(pk(x), kdf(~k_sim, <~RAND, 'K_AMF_Derivation'>))
+         ) @ #vk.24 )
+    case AMF_Deliver_CBE_Key_case_1
+    solve( !KU( sign(<h(<M1, h(<M2, h(<M3, N>)>)>), $AreaID, 
+                      ExpirationTime>,
+                     ~k_CBE)
+           ) @ #vk.21 )
+      case BS_Broadcast_Step1_Notification_case_1
+      by contradiction /* from formulas */
+    next
+      case BS_Broadcast_Step1_Notification_case_2
+      by contradiction /* from formulas */
+    next
+      case c_sign
+      by solve( !KU( ~k_CBE ) @ #vk.56 )
+    qed
+  next
+    case AMF_Deliver_CBE_Key_case_2
+    solve( !KU( sign(<h(<M1, h(<M2, h(<M3, N>)>)>), $AreaID, 
+                      ExpirationTime>,
+                     ~k_CBE)
+           ) @ #vk.21 )
+      case BS_Broadcast_Step1_Notification_case_1
+      by contradiction /* from formulas */
+    next
+      case BS_Broadcast_Step1_Notification_case_2
+      by contradiction /* from formulas */
+    next
+      case c_sign
+      by solve( !KU( ~k_CBE ) @ #vk.51 )
+    qed
+  next
+    case c_senc
+    solve( !KU( kdf(~k_sim, <~RAND, 'K_AMF_Derivation'>) ) @ #vk.51 )
+      case c_kdf
+      by solve( !KU( ~k_sim ) @ #vk.52 )
+    qed
+  qed
+qed
+
+lemma wormhole_resistance:
+  all-traces
+  "∀ UE M1 M2 M3 Area_UE ExpirationTime #i.
+    (UE_Displayed_Alert( UE, M1, M2, M3, Area_UE, ExpirationTime
+     ) @ #i) ⇒
+    (∃ CBE C N #j.
+      CBE_Generated_Alert( CBE, M1, M2, M3, N, C, Area_UE, ExpirationTime
+      ) @ #j)"
+/*
+guarded formula characterizing all counter-examples:
+"∃ UE M1 M2 M3 Area_UE ExpirationTime #i.
+  (UE_Displayed_Alert( UE, M1, M2, M3, Area_UE, ExpirationTime
+   ) @ #i)
+ ∧
+  ∀ CBE C N #j.
+   (CBE_Generated_Alert( CBE, M1, M2, M3, N, C, Area_UE,
+                         ExpirationTime
+    ) @ #j)
+  ⇒
+   ⊥"
+*/
+simplify
+solve( St_UE_Wait_Page3( $UE, M1, M2, h(<M3, N>), Area_UE,
+                         ExpirationTime
+       ) ▶₁ #i )
+  case UE_Get_Page2_case_1
+  solve( !KU( senc(pk(x), kdf(~k_sim, <RAND, 'K_AMF_Derivation'>))
+         ) @ #vk.24 )
+    case AMF_Deliver_CBE_Key_case_1
+    solve( !KU( sign(<h(<M1, h(<M2, h(<M3, N>)>)>), $AreaID, 
+                      ExpirationTime>,
+                     ~k_CBE)
+           ) @ #vk.21 )
+      case BS_Broadcast_Step1_Notification_case_1
+      by contradiction /* from formulas */
+    next
+      case BS_Broadcast_Step1_Notification_case_2
+      by contradiction /* from formulas */
+    next
+      case c_sign
+      by solve( !KU( ~k_CBE ) @ #vk.36 )
+    qed
+  next
+    case AMF_Deliver_CBE_Key_case_2
+    solve( !KU( sign(<h(<M1, h(<M2, h(<M3, N>)>)>), $AreaID, 
+                      ExpirationTime>,
+                     ~k_CBE)
+           ) @ #vk.21 )
+      case BS_Broadcast_Step1_Notification_case_1
+      by contradiction /* from formulas */
+    next
+      case BS_Broadcast_Step1_Notification_case_2
+      by contradiction /* from formulas */
+    next
+      case c_sign
+      by solve( !KU( ~k_CBE ) @ #vk.49 )
+    qed
+  next
+    case c_senc
+    solve( !KU( kdf(~k_sim, <RAND, 'K_AMF_Derivation'>) ) @ #vk.36 )
+      case c_kdf
+      by solve( !KU( ~k_sim ) @ #vk.38 )
+    qed
+  qed
+next
+  case UE_Get_Page2_case_2
+  solve( !KU( senc(pk(x), kdf(~k_sim, <RAND, 'K_AMF_Derivation'>))
+         ) @ #vk.24 )
+    case AMF_Deliver_CBE_Key_case_1
+    solve( !KU( sign(<h(<M1, h(<M2, h(<M3, N>)>)>), $AreaID, 
+                      ExpirationTime>,
+                     ~k_CBE)
+           ) @ #vk.21 )
+      case BS_Broadcast_Step1_Notification_case_1
+      by contradiction /* from formulas */
+    next
+      case BS_Broadcast_Step1_Notification_case_2
+      by contradiction /* from formulas */
+    next
+      case c_sign
+      by solve( !KU( ~k_CBE ) @ #vk.45 )
+    qed
+  next
+    case AMF_Deliver_CBE_Key_case_2
+    solve( !KU( sign(<h(<M1, h(<M2, h(<M3, N>)>)>), $AreaID, 
+                      ExpirationTime>,
+                     ~k_CBE)
+           ) @ #vk.21 )
+      case BS_Broadcast_Step1_Notification_case_1
+      by contradiction /* from formulas */
+    next
+      case BS_Broadcast_Step1_Notification_case_2
+      by contradiction /* from formulas */
+    next
+      case c_sign
+      by solve( !KU( ~k_CBE ) @ #vk.56 )
+    qed
+  next
+    case c_senc
+    solve( !KU( kdf(~k_sim, <RAND, 'K_AMF_Derivation'>) ) @ #vk.45 )
+      case c_kdf
+      by solve( !KU( ~k_sim ) @ #vk.47 )
+    qed
+  qed
+next
+  case UE_Get_Page2_case_3
+  solve( !KU( senc(pk(x), kdf(~k_sim, <~RAND, 'K_AMF_Derivation'>))
+         ) @ #vk.24 )
+    case AMF_Deliver_CBE_Key_case_1
+    solve( !KU( sign(<h(<M1, h(<M2, h(<M3, N>)>)>), $AreaID, 
+                      ExpirationTime>,
+                     ~k_CBE)
+           ) @ #vk.21 )
+      case BS_Broadcast_Step1_Notification_case_1
+      by contradiction /* from formulas */
+    next
+      case BS_Broadcast_Step1_Notification_case_2
+      by contradiction /* from formulas */
+    next
+      case c_sign
+      by solve( !KU( ~k_CBE ) @ #vk.49 )
+    qed
+  next
+    case AMF_Deliver_CBE_Key_case_2
+    solve( !KU( sign(<h(<M1, h(<M2, h(<M3, N>)>)>), $AreaID, 
+                      ExpirationTime>,
+                     ~k_CBE)
+           ) @ #vk.21 )
+      case BS_Broadcast_Step1_Notification_case_1
+      by contradiction /* from formulas */
+    next
+      case BS_Broadcast_Step1_Notification_case_2
+      by contradiction /* from formulas */
+    next
+      case c_sign
+      by solve( !KU( ~k_CBE ) @ #vk.45 )
+    qed
+  next
+    case c_senc
+    solve( !KU( kdf(~k_sim, <~RAND, 'K_AMF_Derivation'>) ) @ #vk.45 )
+      case c_kdf
+      by solve( !KU( ~k_sim ) @ #vk.46 )
+    qed
+  qed
+next
+  case UE_Get_Page2_case_4
+  solve( !KU( senc(pk(x), kdf(~k_sim, <~RAND, 'K_AMF_Derivation'>))
+         ) @ #vk.24 )
+    case AMF_Deliver_CBE_Key_case_1
+    solve( !KU( sign(<h(<M1, h(<M2, h(<M3, N>)>)>), $AreaID, 
+                      ExpirationTime>,
+                     ~k_CBE)
+           ) @ #vk.21 )
+      case BS_Broadcast_Step1_Notification_case_1
+      by contradiction /* from formulas */
+    next
+      case BS_Broadcast_Step1_Notification_case_2
+      by contradiction /* from formulas */
+    next
+      case c_sign
+      by solve( !KU( ~k_CBE ) @ #vk.56 )
+    qed
+  next
+    case AMF_Deliver_CBE_Key_case_2
+    solve( !KU( sign(<h(<M1, h(<M2, h(<M3, N>)>)>), $AreaID, 
+                      ExpirationTime>,
+                     ~k_CBE)
+           ) @ #vk.21 )
+      case BS_Broadcast_Step1_Notification_case_1
+      by contradiction /* from formulas */
+    next
+      case BS_Broadcast_Step1_Notification_case_2
+      by contradiction /* from formulas */
+    next
+      case c_sign
+      by solve( !KU( ~k_CBE ) @ #vk.51 )
+    qed
+  next
+    case c_senc
+    solve( !KU( kdf(~k_sim, <~RAND, 'K_AMF_Derivation'>) ) @ #vk.51 )
+      case c_kdf
+      by solve( !KU( ~k_sim ) @ #vk.52 )
+    qed
+  qed
+qed
+
+lemma lss_non_3GPP_executability:
+  exists-trace
+  "∃ UE M1 M2 M3 N TargetAreaID ExpirationTime BS2 AMF1 AMF2 CBE #i
+     #j #k.
+    (((AMF_Forwarding_Key( AMF1, CBE, UE ) @ #i) ∧
+      (AMF_Forwarded_Alert( AMF2, BS2, N ) @ #j)) ∧
+     (UE_Displayed_Alert( UE, M1, M2, M3, TargetAreaID, ExpirationTime
+      ) @ #k)) ∧
+    (¬(AMF1 = AMF2))"
+/*
+guarded formula characterizing all satisfying traces:
+"∃ UE M1 M2 M3 N TargetAreaID ExpirationTime BS2 AMF1 AMF2 CBE #i
+   #j #k.
+  (AMF_Forwarding_Key( AMF1, CBE, UE ) @ #i) ∧
+  (AMF_Forwarded_Alert( AMF2, BS2, N ) @ #j) ∧
+  (UE_Displayed_Alert( UE, M1, M2, M3, TargetAreaID, ExpirationTime
+   ) @ #k)
+ ∧
+  ¬(AMF1 = AMF2)"
+*/
+simplify
+solve( !NAS_Context( $UE, $AMF, K_nas ) ▶₀ #i )
+  case AMF_Check_Response
+  solve( !AMF_State_CBE_Key( $AMF, $CBE, pk_CBE ) ▶₁ #i )
+    case AMF_Install_CBE_Key
+    solve( Secure_Channel_CBE_AMF( $CBE.1, $AMF.1,
+                                   <'write-replace-warning', M1, M2, M3, N, C, sig, TargetAreaID, 
+                                    ExpirationTime>
+           ) ▶₀ #j )
+      case CBE_Generate_Alert_case_1
+      solve( !Secure_Link_AMF_BS( $AMF.1, $BS ) ▶₁ #j )
+        case Init_AMF_BS_Link
+        solve( St_UE_Wait_Page3( $UE, M1, M2, h(<M3, N.1>), TargetAreaID.1,
+                                 ExpirationTime
+               ) ▶₁ #k )
+          case UE_Get_Page2_case_1
+          solve( !KU( mac(~k_sim, <~RAND, 'Res'>) ) @ #vk.7 )
+            case UE_Process_Challenge
+            solve( !KU( aenc($UE, pk(~sk_HN)) ) @ #vk.17 )
+              case UE_Send_Attach_SUCI
+              solve( !KU( senc(pk(x),
+                               kdf(~k_sim.2, <RAND.1, 'K_AMF_Derivation'>))
+                     ) @ #vk.38 )
+                case AMF_Deliver_CBE_Key_case_1
+                solve( !KU( sign(<h(<M1, h(<M2, h(<M3, N.1>)>)>), $AreaID, 
+                                  ExpirationTime>,
+                                 ~k_CBE.1)
+                       ) @ #vk.35 )
+                  case BS_Broadcast_Step1_Notification_case_1
+                  solve( !KU( ~Content3.1 ) @ #vk.10 )
+                    case BS_Send_Page3
+                    solve( !KU( senc(pk_CBE,
+                                     kdf(~k_sim.3, <RAND.2, 'K_AMF_Derivation'>))
+                           ) @ #vk.39 )
+                      case AMF_Deliver_CBE_Key_case_1
+                      solve( !KU( mac(~k_sim.1, RAND.1) ) @ #vk.46 )
+                        case AMF_Send_Challenge
+                        solve( !KU( mac(~k_sim.3, RAND.2) ) @ #vk.51 )
+                          case AMF_Send_Challenge
+                          solve( !KU( aenc($UE, pk(~sk_HN.9)) ) @ #vk.63 )
+                            case UE_Send_Attach_SUCI
+                            solve( !KU( aenc($UE, pk(~sk_HN.10)) ) @ #vk.70 )
+                              case UE_Send_Attach_SUCI
+                              solve( !KU( ~RAND ) @ #vk.58 )
+                                case AMF_Send_Challenge
+                                solve( !KU( ~N.1 ) @ #vk.27 )
+                                  case BS_Send_Page3
+                                  solve( !KU( ~Content2.1 ) @ #vk.45 )
+                                    case BS_Send_Page2
+                                    solve( !KU( ~Content1.1 ) @ #vk.50 )
+                                      case BS_Send_Page1
+                                      solve( !KU( ~t0.1 ) @ #vk.56 )
+                                        case BS_Broadcast_Step1_Notification
+                                        solve( !KU( ~RAND.1 ) @ #vk.58 )
+                                          case AMF_Send_Challenge
+                                          solve( !KU( ~RAND.2 ) @ #vk.59 )
+                                            case AMF_Send_Challenge
+                                            solve( !KU( h(<~Content3.1, ~N.1>) ) @ #vk.53 )
+                                              case BS_Send_Page2
+                                              solve( !KU( h(<~Content2.1, h(<~Content3.1, ~N.1>)>)
+                                                     ) @ #vk.55 )
+                                                case BS_Send_Page1
+                                                solve( !KU( h(<~Content1.1, 
+                                                               h(<~Content2.1, 
+                                                                  h(<~Content3.1, ~N.1>)>)
+                                                              >)
+                                                       ) @ #vk.57 )
+                                                  case BS_Broadcast_Step1_Notification
+                                                  solve( !KU( mac(~k_sim, ~RAND) ) @ #vk.60 )
+                                                    case AMF_Send_Challenge
+                                                    SOLVED // trace found
+                                                  qed
+                                                qed
+                                              qed
+                                            qed
+                                          qed
+                                        qed
+                                      qed
+                                    qed
+                                  qed
+                                qed
+                              qed
+                            qed
+                          qed
+                        qed
+                      qed
+                    qed
+                  qed
+                qed
+              qed
+            qed
+          qed
+        qed
+      qed
+    qed
+  qed
+qed
+
+lemma replay_resistance_check:
+  all-traces
+  "∀ UE C t #i.
+    (UE_Accepted_Paging_With_Time( UE, C, t ) @ #i) ⇒
+    (¬(∃ #j. (Epoch_Ended( t ) @ #j) ∧ (#j < #i)))"
+/*
+guarded formula characterizing all counter-examples:
+"∃ UE C t #i.
+  (UE_Accepted_Paging_With_Time( UE, C, t ) @ #i)
+ ∧
+  ∃ #j. (Epoch_Ended( t ) @ #j) ∧ #j < #i"
+*/
+simplify
+by contradiction /* from formulas */
+
+restriction check_epoch_active:
+  "∀ t #i.
+    (Ensure_Active_Epoch( t ) @ #i) ⇒
+    (¬(∃ #j. (Epoch_Ended( t ) @ #j) ∧ (#j < #i)))"
+  // safety formula
+
+restriction Equality:
+  "∀ x y #i. (Eq( x, y ) @ #i) ⇒ (x = y)"
+  // safety formula
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/* All wellformedness checks were successful. */
+
+/*
+Generated from:
+Tamarin version 1.10.0
+Maude version 2.7.1
+Git revision: 4ab9b6828aef877eb6e5b091208b8c14f1f784f7, branch: master
+Compiled at: 2025-11-14 21:30:27.386067222 UTC
+*/
+
+end

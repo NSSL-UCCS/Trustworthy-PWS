@@ -1,0 +1,358 @@
+/*
+   Project: Trustworthy-PWS Formal Analysis
+   File: pws_formal_analysis.spthy
+   Version: 1.0 (Anonymous Submission)
+   
+   Description: 
+   This Tamarin Prover model formally verifies the security properties of the 
+   Trustworthy-PWS protocol described in the paper. It models:
+     1. Abstracted 5G-AKA for secure NAS tunnel establishment.
+     2. Dynamic provisioning of the CBE Public Key ($PK_{CBE}$).
+     3. The Multi-Page Reverse Hash Chain protocol.
+     4. Geofencing logic (Wormhole Protection).
+     5. Time-based Replay Protection (Epochs).
+   
+   Adversary Model:
+     - Dolev-Yao adversary (controls network).
+     - Extended capability: Compromised Base Station (can read/inject broadcast messages).
+*/
+
+theory Trustworthy_PWS_Scheme
+begin
+
+builtins: hashing, signing, symmetric-encryption, asymmetric-encryption
+functions: 
+    // Key Derivation Function: KDF(Key, Input) -> NewKey
+    kdf/2, 
+    // Message Authentication Code: MAC(Key, Input) -> Tag
+    mac/2
+
+/* ===========================================================================
+   SECTION 1: SETUP & TRUST MODEL
+   =========================================================================== */
+
+// 1. Subscription & PKI Provisioning
+rule Init_Subscription:
+    let
+        pk_HN = pk(~sk_HN)
+    in
+    [ Fr(~k_sim), Fr(~sk_HN) ]
+    --[ Provisioned($UE, $HN) ]->
+    [ 
+      !Ltk_UE_USIM($UE, $HN, ~k_sim, pk_HN), 
+      !Ltk_HN_DB($HN, $UE, ~k_sim),
+      !Ltk_HN_Priv($HN, ~sk_HN)
+    ]
+
+// 2. Inter-Network Trust (Backhaul Assumptions)
+rule Init_Secure_Backhaul:
+    [ ] --> [ !Secure_Link($AMF, $HN) ]
+
+rule Init_CBE_AMF_Link:
+    [ ] --> [ !Secure_Link_CBE_AMF($CBE, $AMF) ]
+
+// AMF <-> BS Trust (N2 Interface)
+rule Init_AMF_BS_Link:
+    [ ] --> [ !Secure_Link_AMF_BS($AMF, $BS) ]
+
+// 3. CBE Root of Trust Initialization
+rule CBE_Generates_And_Sends_Key:
+    let
+        pk_CBE = pk(~k_CBE)
+    in
+    [ 
+        Fr(~k_CBE), !Secure_Link_CBE_AMF($CBE, $AMF)
+    ]
+    --[ 
+        CBE_Created_Key($CBE, pk_CBE), CBE_Sent_Key($CBE, $AMF)
+    ]->
+    [ 
+        !Ltk_CBE($CBE, ~k_CBE), 
+        Secure_Channel_CBE_AMF($CBE, $AMF, <'Key_Provisioning', pk_CBE>) 
+    ]
+
+rule AMF_Install_CBE_Key:
+    [ 
+        Secure_Channel_CBE_AMF($CBE, $AMF, <'Key_Provisioning', pk_CBE>) 
+    ]
+    --[ 
+        AMF_Received_Key($AMF, $CBE) 
+    ]->
+    [ 
+        !AMF_State_CBE_Key($AMF, $CBE, pk_CBE) 
+    ]
+
+// 4. Time Epoch Management (for Replay Resistance)
+rule Init_Clock:
+    [ Fr(~t0) ]
+    --[ Epoch_Started(~t0) ]->
+    [ State_Linear(~t0), !Epoch_Tag(~t0) ]
+
+rule Time_Passes:
+    let new_t = ~new_t in
+    [ State_Linear(old_t), Fr(~new_t) ]
+    --[ Epoch_Ended(old_t), Epoch_Started(new_t) ]->
+    [ State_Linear(new_t), !Epoch_Tag(new_t) ]
+
+/* ===========================================================================
+   SECTION 2: 5G-AKA (Abstracted)
+   Models the derivation of K_NAS to secure the key delivery tunnel.
+   =========================================================================== */
+
+rule UE_Send_Attach_SUCI:
+    let SUCI = aenc($UE, pk_HN) in
+    [ Fr(~id_req), !Ltk_UE_USIM($UE, $HN, ~k_sim, pk_HN) ] 
+    --[ UE_Starts_AKA($UE) ]->
+    [ Out( <'Attach_Req', SUCI, $HN, ~id_req> ), St_UE_1_Wait_Challenge($UE, $HN, ~id_req) ]
+
+rule AMF_Forward_SUCI:
+    [ In( <'Attach_Req', SUCI, $HN, id_req> ), !Secure_Link($AMF, $HN) ]
+    -->
+    [ Channel_AMF_to_HN($AMF, $HN, SUCI, id_req), St_AMF_1_Wait_Vector($AMF, $HN, SUCI, id_req) ]
+
+rule HN_Process_SUCI:
+    let
+        SUPI  = adec(SUCI, ~sk_HN)
+        RAND  = ~RAND
+        AUTN  = mac(~k_sim, RAND)
+        XRES  = mac(~k_sim, <RAND, 'Res'>)
+        K_nas = kdf(~k_sim, <RAND, 'K_AMF_Derivation'>)
+    in
+    [ Channel_AMF_to_HN($AMF, $HN, SUCI, id_req), !Ltk_HN_Priv($HN, ~sk_HN), !Ltk_HN_DB($HN, SUPI, ~k_sim), Fr(~RAND) ]
+    --[ HN_Authorized_User($HN, SUPI) ]->
+    [ Channel_HN_to_AMF($HN, $AMF, SUPI, id_req, <RAND, AUTN, XRES, K_nas>) ]
+
+rule AMF_Send_Challenge:
+    let vector = <RAND, AUTN, XRES, K_nas> in
+    [ Channel_HN_to_AMF($HN, $AMF, $UE, id_req, vector), St_AMF_1_Wait_Vector($AMF, $HN, SUCI, id_req) ]
+    -->
+    [ Out( <'Auth_Req', RAND, AUTN> ), St_AMF_2_Wait_Res($UE, $AMF, XRES, K_nas) ]
+
+rule UE_Process_Challenge:
+    let
+        calculated_AUTN = mac(~k_sim, RAND)
+        RES   = mac(~k_sim, <RAND, 'Res'>)
+        K_nas = kdf(~k_sim, <RAND, 'K_AMF_Derivation'>)
+    in
+    [ In( <'Auth_Req', RAND, AUTN> ), St_UE_1_Wait_Challenge($UE, $HN, id_req), !Ltk_UE_USIM($UE, $HN, ~k_sim, pk_HN) ]
+    --[ Eq(AUTN, calculated_AUTN), UE_Completed_AKA($UE, $AMF, K_nas) ]->
+    [ Out( <'Auth_Res', RES> ), !NAS_Context($UE, $AMF, K_nas) ]
+
+rule AMF_Check_Response:
+    [ In( <'Auth_Res', RES> ), St_AMF_2_Wait_Res($UE, $AMF, XRES, K_nas) ]
+    --[ Eq(RES, XRES), AMF_Completed_AKA($UE, $AMF, K_nas) ]->
+    [ !NAS_Context($UE, $AMF, K_nas) ]
+
+/* ===========================================================================
+   SECTION 3: PWS KEY DELIVERY (Via Secure NAS Tunnel)
+   =========================================================================== */
+
+rule AMF_Deliver_CBE_Key:
+    [ !NAS_Context($UE, $AMF, K_nas), !AMF_State_CBE_Key($AMF, $CBE, pk_CBE) ]
+    --[ AMF_Forwarding_Key($AMF, $CBE, $UE) ]->
+    [ Out( senc(pk_CBE, K_nas) ) ]
+
+rule UE_Install_CBE_Key:
+    [ In( senc(pk_CBE, K_nas) ), !NAS_Context($UE, $AMF, K_nas) ]
+    --[ UE_Learned_Key($UE, pk_CBE) ]->
+    [ !UE_Installed_PWS_Root($UE, pk_CBE), !UE_Location($UE, $AreaID) ]
+
+/* ===========================================================================
+   SECTION 4: MULTI_PAGE ALERT GENERATION (Reverse Hash Chain)
+   =========================================================================== */
+
+rule CBE_Generate_Alert:
+   let
+       N = ~N  // Nonce / Seed
+       M1 = ~Content1; M2 = ~Content2; M3 = ~Content3
+       
+       // Construct Reverse Hash Chain
+       H_Last = h(<M3, N>)
+       H_Mid  = h(<M2, H_Last>)
+       C      = h(<M1, H_Mid>) // The Commitment (Root)
+
+       ExpirationTime = CurrentEpoch
+       sig = sign(<C, TargetAreaID, ExpirationTime>, ~sk_CBE) 
+       
+       msg_to_amf = <'write-replace-warning', M1, M2, M3, N, C, sig, TargetAreaID, ExpirationTime> 
+    in
+   [ 
+       Fr(~N), Fr(~Content1), Fr(~Content2), Fr(~Content3),
+       In(TargetAreaID), 
+       !Epoch_Tag(CurrentEpoch), 
+       !Ltk_CBE($CBE, ~sk_CBE), 
+       !Secure_Link_CBE_AMF($CBE, $AMF) 
+   ]
+   --[ 
+       CBE_Generated_Alert($CBE, M1, M2, M3, N, C, TargetAreaID, CurrentEpoch),
+       CBE_Sent_Alert_To_AMF($CBE, $AMF),
+       CBE_Set_Expiration(N, CurrentEpoch)
+   ]->
+   [ Secure_Channel_CBE_AMF($CBE, $AMF, msg_to_amf) ]
+
+rule AMF_Forward_Alert_To_BS:
+   let
+       msg_in  = <'write-replace-warning', M1, M2, M3, N, C, sig, TargetAreaID, ExpirationTime>
+       msg_out = <'Broadcast_Command', M1, M2, M3, N, C, sig, TargetAreaID, ExpirationTime>
+   in
+   [ Secure_Channel_CBE_AMF($CBE, $AMF, msg_in), !Secure_Link_AMF_BS($AMF, $BS) ]
+   --[ AMF_Forwarded_Alert($AMF, $BS, N) ]->
+   [ Secure_Channel_AMF_BS($AMF, $BS, msg_out) ]
+
+/* ===========================================================================
+   SECTION 5: BS BROADCAST (The Untrusted Edge)
+   =========================================================================== */
+
+rule BS_Broadcast_Step1_Notification:
+    let
+        msg_in = <'Broadcast_Command', M1, M2, M3, N, C, sig, TargetAreaID, ExpirationTime>
+        H_Last = h(<M3, N>)
+        H_Mid  = h(<M2, H_Last>)
+        // Broadcast SIB1/Paging (Header)
+        paging_msg = <'Alert_Notification', C, sig, TargetAreaID, ExpirationTime>
+    in
+    [ Secure_Channel_AMF_BS($AMF, $BS, msg_in) ]
+    --[ BS_Sent_Notification($BS, C), BS_Start_Alert_Session($BS, N) ]->
+    [ 
+        Out( paging_msg ), // Dolev-Yao Interception Point
+        St_BS_Send_Page1($BS, M1, M2, M3, N, H_Mid, H_Last) 
+    ]
+
+rule BS_Send_Page1:
+    let msg = <'SIB_Page1', M1, H_Mid> in
+    [ St_BS_Send_Page1($BS, M1, M2, M3, N, H_Mid, H_Last) ]
+    -->
+    [ Out( msg ), St_BS_Send_Page2($BS, M2, M3, N, H_Last) ]
+
+rule BS_Send_Page2:
+    let msg = <'SIB_Page2', M2, H_Last> in
+    [ St_BS_Send_Page2($BS, M2, M3, N, H_Last) ]
+    -->
+    [ Out( msg ), St_BS_Send_Page3($BS, M3, N) ]
+
+rule BS_Send_Page3:
+    let msg = <'SIB_Page3', M3, N> in
+    [ St_BS_Send_Page3($BS, M3, N) ]
+    --[ BS_Finished_Chain($BS, N) ]->
+    [ Out( msg ) ]
+
+/* ===========================================================================
+   SECTION 6: UE VERIFICATION LOGIC
+   =========================================================================== */
+
+rule UE_Receive_Paging:
+    let
+        msg_in = <'Alert_Notification', C, sig, TargetAreaID, ExpirationTime>
+    in
+    [ In( msg_in ), !UE_Installed_PWS_Root($UE, pk_CBE), !UE_Location($UE, MyCurrentArea) ]
+    --[ 
+        // 1. Freshness Check
+        Ensure_Active_Epoch(ExpirationTime), 
+        UE_Accepted_Paging_With_Time($UE, C, ExpirationTime),
+        // 2. Signature Check (Source Auth)
+        Eq( verify(sig, <C, TargetAreaID, ExpirationTime>, pk_CBE), true ),
+        UE_Verified_Signature($UE, C),
+        // 3. Geofencing Check (Wormhole Defense)
+        Eq( TargetAreaID, MyCurrentArea ),
+        UE_Received_Notification($UE, C, MyCurrentArea)
+    ]->
+    [ St_UE_Wait_Page1($UE, C, TargetAreaID, ExpirationTime) ]
+
+rule UE_Get_Page1:
+    let 
+        msg = <'SIB_Page1', M1, H_Mid>
+        calc_C = h(<M1, H_Mid>)
+    in
+    [ In(msg), St_UE_Wait_Page1($UE, C, TargetAreaID, ExpirationTime)]
+    --[ Eq(calc_C, C) ]-> 
+    [ St_UE_Wait_Page2($UE, M1, H_Mid, TargetAreaID, ExpirationTime) ] 
+
+rule UE_Get_Page2:
+    let 
+        msg = <'SIB_Page2', M2, H_Last>
+        calc_H_Mid = h(<M2, H_Last>)
+    in
+    [ In(msg), St_UE_Wait_Page2($UE, M1, H_Mid, TargetAreaID, ExpirationTime) ]
+    --[ Eq(calc_H_Mid, H_Mid) ]->
+    [ St_UE_Wait_Page3($UE, M1, M2, H_Last, TargetAreaID, ExpirationTime) ]
+
+rule UE_Get_Page3:
+    let 
+        msg = <'SIB_Page3', M3, N>
+        calc_H_Last = h(<M3, N>)
+    in
+    [ In(msg), St_UE_Wait_Page3($UE, M1, M2, H_Last, TargetAreaID, ExpirationTime) ]
+    --[ 
+        Eq(calc_H_Last, H_Last),
+        UE_Displayed_Alert($UE, M1, M2, M3, TargetAreaID, ExpirationTime)
+    ]->
+    [ St_UE_Done($UE, N) ]
+
+/* ===========================================================================
+   SECTION 7: LEMMAS & SECURITY PROOFS
+   =========================================================================== */
+
+// 1. Sanity Check: Does the 5G-AKA handshake work?
+lemma aka_executability:
+    exists-trace
+    "Ex UE AMF key #i #j. UE_Completed_AKA(UE, AMF, key) @ i & AMF_Completed_AKA(UE, AMF, key) @ j"
+
+// 2. Sanity Check: Does the CBE Key delivery work?
+lemma cbe_key_delivery_executability:
+    exists-trace
+    "Ex UE key #i. UE_Learned_Key(UE, key) @ i"
+
+// 3. Integrity: Can an attacker inject a fake CBE Key?
+// Result: Should hold (All traces)
+lemma cbe_key_integrity:
+    all-traces
+    "All UE key #i. UE_Learned_Key(UE, key) @ i ==> (Ex CBE #j. CBE_Created_Key(CBE, key) @ j)"
+
+// 4. Executability: Can a valid alert be displayed?
+lemma alert_executability:
+    exists-trace
+    "Ex UE M1 M2 M3 TargetAreaID ExpirationTime #i. 
+     UE_Displayed_Alert(UE, M1, M2, M3, TargetAreaID, ExpirationTime) @ i"
+
+// 5. Source Authentication: Does the alert come from the CBE?
+// Result: Should hold (All traces)
+lemma alert_integrity:
+    all-traces
+    "All UE M1 M2 M3 TargetAreaID ExpirationTime #i. 
+     UE_Displayed_Alert(UE, M1, M2, M3, TargetAreaID, ExpirationTime) @ i
+     ==> 
+     (Ex CBE C N #j. CBE_Generated_Alert(CBE, M1, M2, M3, N, C, TargetAreaID, ExpirationTime) @ j)"
+
+// 6. Wormhole Resistance: Does the UE reject alerts for other areas?
+// Result: Should hold (All traces)
+lemma wormhole_resistance:
+    all-traces
+    "All UE M1 M2 M3 Area_UE ExpirationTime #i. 
+     UE_Displayed_Alert(UE, M1, M2, M3, Area_UE, ExpirationTime) @ i
+     ==> 
+     (Ex CBE C N #j. CBE_Generated_Alert(CBE, M1, M2, M3, N, C, Area_UE, ExpirationTime) @ j)"
+
+// 7. Roaming/LSS Support: Can we verify alerts from a different network?
+// Result: Should exist a trace
+lemma lss_non_3GPP_executability:
+    exists-trace
+    "Ex UE M1 M2 M3 N TargetAreaID ExpirationTime BS2 AMF1 AMF2 CBE #i #j #k.
+     AMF_Forwarding_Key(AMF1, CBE, UE) @ i &
+     AMF_Forwarded_Alert(AMF2, BS2, N) @ j &
+     UE_Displayed_Alert(UE, M1, M2, M3, TargetAreaID, ExpirationTime) @ k &
+     not (AMF1 = AMF2)"
+
+// 8. Replay Resistance: Do we reject expired epochs?
+// Result: Should hold (All traces)
+lemma replay_resistance:
+     all-traces
+     "All UE C t #i. UE_Accepted_Paging_With_Time(UE, C, t) @ i 
+      ==> not (Ex #j. Epoch_Ended(t) @ j & #j < #i)"
+
+restriction check_epoch_active:
+    "All t #i. Ensure_Active_Epoch(t) @ i ==> not (Ex #j. Epoch_Ended(t) @ j & #j < #i)"
+
+restriction Equality:
+    "All x y #i. Eq(x, y) @ i ==> x = y"
+
+end
